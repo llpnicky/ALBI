@@ -30,7 +30,7 @@ The following articles we're used for reference:
 # Download.
 You can download this script raw from github.
 ```console
-curl -LO https://raw.githubusercontent.com/Nature0001/artix-luks-base-install/master/artix-luks-base-install
+curl -LO https://raw.githubusercontent.com/llpnicky/artix-luks-base-install/master/artix-luks-base-install
 ```
 
 # Usage.

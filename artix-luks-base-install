@@ -144,6 +144,7 @@ sleep 1
 dmsetup remove --force cryptlvm
 killall -s 9 cryptsetup
 } 2>/dev/null
+udevadm settle 2>/dev/null
 
 # ENABLE DEBUG OUTPUT, EXIT ON ERROR
 set -xe
@@ -153,6 +154,7 @@ parted -s -a optimal $DISK_NAME mklabel gpt
 parted -s -a optimal $DISK_NAME mkpart "BOOT" fat32 0% 512MiB
 parted -s -a optimal $DISK_NAME set 1 esp on
 parted -s -a optimal $DISK_NAME mkpart "CRYPT" ext4 512MiB 100%
+udevadm settle
 
 # SETUP LUKS
 echo -ne "$ENCRYPTION_PASSWORD" | cryptsetup luksFormat ${DISK_NAME}p2 -d -

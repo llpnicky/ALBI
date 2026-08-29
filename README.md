@@ -38,29 +38,3 @@ Run the script and use keys to navigate through the menu to change the default v
 ```console
 $ ./artix-luks-base-install
 ```
-
-# Internet setup with Connmanctl.
-A cable is always recommended, alternatively:
-```console
-connmanctl
-> agent on
-> enable wifi
-> scan wifi
-...
-Scan Completed
-> services
-... A long list of services SSIDS & codes ...
-
-> connect <NETWORK ID>
-Enter Password: ******
-...
-Connected
-> exit
-```
-
-# Summary.
-You should read the script, it is well documented and should be easy to understand.
-Anything unclear can be found in the listed articles above.
-
-If you have suggestions on improving the script, or need help with the
-installation. Feel free to contribute/open issues.

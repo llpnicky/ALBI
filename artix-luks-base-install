@@ -27,9 +27,9 @@ VERIFY_CHANGE_2="${RED}< CHANGE THIS ${NORMAL}"
   && echo "Root privileges required." \
   && exit
 # IF WAN
-[ -z "$(connmanctl state | grep -e online -e ready)" ] \
-  && echo "No network connection." \
-  && exit
+ping -c 1 -W 5 artixlinux.org >/dev/null 2>&1 \
+|| { echo "No network connection. Get online first, then re-run this script."; exit 1; }
+
 ################################################
 # MENU FUNCTIONS                               #
 change_encryption_password () {

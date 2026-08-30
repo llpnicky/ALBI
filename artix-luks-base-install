@@ -226,7 +226,7 @@ echo 'LC_COLLATE="C"'
 } >> /mnt/etc/locale.conf
 sed -s 's/#en_US/en_US/g' -i /mnt/etc/locale.gen
 artix-chroot /mnt sh -c 'locale-gen'
-artix-chroot /mnt sh -c 'ln -sf /usr/share/zoneinfo/Europe/Amsterdam /etc/localtime && hwclock -w'
+artix-chroot /mnt sh -c 'ln -sf /usr/share/zoneinfo/America/Los_Angeles /etc/localtime && hwclock -w'
 
 # CLEANUP
 swapoff /dev/$VG_NAME/swap

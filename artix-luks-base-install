@@ -3,38 +3,93 @@
 # WARNING: erases the selected disk. Run from an Artix live USB as root.
 set -euo pipefail
 
-# Check the installer environment before changing anything.
+# Check the live installer before changing anything.
 [[ $EUID == 0 ]] || { echo 'Run as root.'; exit 1; }
 [[ -d /sys/firmware/efi/efivars ]] || { echo 'Boot the USB in UEFI mode.'; exit 1; }
 for tool in basestrap artix-chroot fstabgen lsblk; do
     command -v "$tool" >/dev/null || { echo "Missing $tool"; exit 1; }
 done
-mountpoint -q /mnt && { echo "Unmount /mnt before starting."; exit 1; }
+mountpoint -q /mnt && { echo 'Unmount /mnt before starting.'; exit 1; }
 
-# Ask where to install.
-lsblk -e7 -o NAME,PATH,SIZE,TYPE,MODEL,MOUNTPOINTS
-read -rp 'Disk to ERASE (e.g. /dev/sda): ' disk
-read -rp 'Username [artix]: ' username
-read -rp 'Hostname [artix]: ' hostname
-username=${username:-artix}
-hostname=${hostname:-artix}
+# Original ALBI menu. Passwords are hidden rather than printed on screen.
+username=artix
+disk=/dev/nvme0n1
+hostname=artix
 vg=VGArtix
+encryption_password=''
+root_password=''
+user_password=''
 
+red=$'\033[0;31m'
+green=$'\033[0;32m'
+normal=$'\033[0m'
+
+ask_password() {
+    local question="$1" variable="$2" first second
+    read -rsp "$question " first; echo
+    read -rsp 'Confirm password: ' second; echo
+    if [[ -z $first || $first == changeme || $first != "$second" ]]; then
+        echo 'Passwords do not match, are empty, or use changeme. Try again.'
+        return 1
+    fi
+    printf -v "$variable" '%s' "$first"
+}
+
+while true; do
+    clear -x 2>/dev/null || true
+    echo '################################################'
+    echo '# Welcome to this Artix Installation Script. #'
+    echo '# Select the values you want to modify: #'
+    [[ -n $encryption_password ]] && a="${green}< CHANGED${normal}" || a="${red}< CHANGE THIS${normal}"
+    [[ -n $root_password ]] && b="${green}< CHANGED${normal}" || b="${red}< CHANGE THIS${normal}"
+    [[ -n $user_password ]] && c="${green}< CHANGED${normal}" || c="${red}< CHANGE THIS${normal}"
+    printf '0) Change the encryption password: %b\n' "$a"
+    printf '1) Change the root password: %b\n' "$b"
+    printf '2) Change the user password: %b\n' "$c"
+    printf "3) Change the user name: '%s'\n" "$username"
+    printf "4) Change the disk name: '%s'\n" "$disk"
+    printf "5) Change the host name: '%s'\n" "$hostname"
+    printf "6) Change the volume group name: '%s'\n" "$vg"
+    echo 'GO) Execute script using above listed variables'
+    echo 'q) EXIT installation'
+    read -rp '> ' choice
+    case $choice in
+        0) ask_password 'Enter the new encryption password:' encryption_password || true ;;
+        1) ask_password 'Enter the new root password:' root_password || true ;;
+        2) ask_password 'Enter the user password:' user_password || true ;;
+        3) read -rp 'Enter the user name: ' username ;;
+        4) lsblk -e7 -o NAME,PATH,SIZE,TYPE,MODEL; read -rp 'Enter the disk name: ' disk ;;
+        5) read -rp 'Enter the host name: ' hostname ;;
+        6) read -rp 'Enter the volume group name: ' vg ;;
+        GO|go) break ;;
+        q|Q) exit 0 ;;
+    esac
+done
+
+# Check all values before erasing anything.
+[[ -n $encryption_password && -n $root_password && -n $user_password ]] || {
+    echo 'Set all three passwords (menu options 0, 1, and 2).'; exit 1;
+}
 [[ -b $disk && $(lsblk -dnro TYPE "$disk") == disk ]] || { echo 'Select a whole disk.'; exit 1; }
 [[ $username =~ ^[a-z_][a-z0-9_-]*$ ]] || { echo 'Invalid username.'; exit 1; }
 [[ $hostname =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*$ ]] || { echo 'Invalid hostname.'; exit 1; }
+[[ $vg =~ ^[a-zA-Z][a-zA-Z0-9_.+-]*$ ]] || { echo 'Invalid volume group name.'; exit 1; }
 [[ ! -e /dev/mapper/cryptlvm ]] || { echo 'cryptlvm is already in use.'; exit 1; }
 if lsblk -nr -o MOUNTPOINTS "$disk" | grep -q '[^[:space:]]'; then
     echo 'That disk has mounted filesystems. Unmount them first.'; exit 1
 fi
-
-# Install disk tools in the live environment before erasing the drive.
-pacman -Sy --needed --noconfirm parted dosfstools cryptsetup lvm2
-vgs "$vg" >/dev/null 2>&1 && { echo "$vg already exists."; exit 1; }
-
+read -rp 'Are you sure?, no going back after this (y/n): ' verify
+[[ $verify == [Yy]* ]] || exit 0
 printf '\nALL DATA ON %s WILL BE LOST.\n' "$disk"
 read -rp "Type 'ERASE $disk' to continue: " answer
-[[ $answer == "ERASE $disk" ]] || exit 1
+[[ $answer == "ERASE $disk" ]] || exit 0
+
+# Install the disk tools in the live environment.
+pacman -Sy --needed --noconfirm parted dosfstools cryptsetup lvm2
+if vgs "$vg" >/dev/null 2>&1; then
+    echo "$vg already exists."; exit 1
+fi
+printf '\nStarting Artix Linux installation...\n'
 
 # SATA disks use /dev/sda1; NVMe disks use /dev/nvme0n1p1.
 partition() {
@@ -52,8 +107,10 @@ parted -s "$disk" mkpart encrypted 513MiB 100%
 partprobe "$disk"
 udevadm settle
 
-cryptsetup luksFormat --type luks2 "$encrypted"   # Prompts for a passphrase.
-cryptsetup open "$encrypted" cryptlvm
+# Supply the password through standard input, never command-line arguments.
+printf '%s' "$encryption_password" | cryptsetup luksFormat --type luks2 --key-file - "$encrypted"
+printf '%s' "$encryption_password" | cryptsetup open --key-file - "$encrypted" cryptlvm
+unset encryption_password
 pvcreate /dev/mapper/cryptlvm
 vgcreate "$vg" /dev/mapper/cryptlvm
 lvcreate -L 8G -n swap "$vg"
@@ -94,12 +151,11 @@ printf '%%wheel ALL=(ALL:ALL) ALL\n' > /mnt/etc/sudoers.d/10-wheel
 chmod 440 /mnt/etc/sudoers.d/10-wheel
 artix-chroot /mnt visudo -cf /etc/sudoers
 
-# Create the user; passwd reads passwords securely from the terminal.
+# Apply the passwords chosen in the installation menu.
 artix-chroot /mnt useradd -m -G wheel -s /bin/zsh "$username"
-echo 'Set the root password:'
-artix-chroot /mnt passwd
-echo "Set the password for $username:"
-artix-chroot /mnt passwd "$username"
+printf 'root:%s\n' "$root_password" | artix-chroot /mnt chpasswd
+printf '%s:%s\n' "$username" "$user_password" | artix-chroot /mnt chpasswd
+unset root_password user_password
 
 # Enable networking for the first boot.
 mkdir -p /mnt/etc/runit/runsvdir/default

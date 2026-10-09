@@ -1,93 +1,73 @@
-# artix-luks-base-install
+# ALBI — Artix Linux Base Installer
 
-#### You should always try to read/understand any code that you execute, especially installation scripts like these.
+A small Bash script for installing a minimal, **encrypted Artix Linux system with runit**. It installs the operating system and leaves desktop setup and dotfiles for later.
 
-##### Questions(Issues)/PR's are welcome.
+**Read the script before running it. It erases the entire disk you select.** Back up anything important first.
 
-A fully self-contained Artix Linux base installation script that installs the
-base system with an encrypted disk on /root and /swap using cryptsetup.
+## What it installs
 
-The installer is only configured to work with EFI+NVME systems and installs the runit
-init system by default. By default it allocates 8G for /swap and
-everything else for /root. This should be sufficient for most configurations.
+- **UEFI only** (not legacy BIOS); supports SATA, NVMe, and MMC drives.
+- A 512 MiB unencrypted EFI partition for booting.
+- **LUKS2 encryption** for the rest of the disk, with LVM inside it:
+  - An ext4 root filesystem using the remaining space.
+  - An 8 GiB swap volume.
+- **Artix + runit**, GRUB, NetworkManager, sudo, and basic command-line tools.
+- A user account with sudo access and Zsh as its shell.
+- **Chezmoi**, if it's available in the enabled package repositories.
 
-Features:
+It **does not** install a desktop environment or apply anyone's dotfiles.
 
-- Simple menu to define password/user/hostname.
-- NVME only.
-- EFI only.
-- Encrypted /root and /swap using LVM on LUKS encryption.
-- Runit init system (replaces systemd).
-- Configures defaults for locale, sudoers and networking.
-- Well documented script.
-- As little bloat as possible.
+## Installation
 
-The following articles we're used for reference:
+1. Boot an **Artix runit live USB in UEFI mode** and connect to the internet.
+2. Open a root shell. Check the disks with `lsblk` and make sure you've backed up the one you intend to erase.
+3. Download and read the installer:
 
-- <https://wiki.artixlinux.org/Main/Installation>
-- <https://wiki.artixlinux.org/Main/InstallationWithFullDiskEncryption>
-- <https://wiki.archlinux.org/title/installation_guide>
-- <https://wiki.archlinux.org/title/Dm-crypt/Encrypting_an_entire_system#LVM_on_LUKS>
+   ```sh
+   curl -LO https://raw.githubusercontent.com/llpnicky/ALBI/master/artix-luks-base-install
+   less artix-luks-base-install
+   ```
 
-# Download.
+4. Run it as root:
 
-You can download this script raw from github.
+   ```sh
+   bash artix-luks-base-install
+   ```
 
-```
-curl -LO https://raw.githubusercontent.com/llpnicky/ALBI/master/artix-luks-base-install
-```
+5. Enter the **disk**, **username**, and **hostname** when asked. You must type an explicit confirmation before the disk is erased.
+6. Set your **disk encryption**, **root**, and **user** passwords when prompted.
+7. After installation finishes successfully, reboot and log in with your new account.
 
-# Usage.
+The installer does **not** reboot the computer automatically.
 
-Run the script and use keys to navigate through the menu to change the default variables.
+### Internet on the live USB
 
-```
-$ ./artix-luks-base-install
-```
+A wired connection is usually easiest. For Wi-Fi, check which network tools your Artix ISO includes. If it has `iwctl`, for example:
 
-# Internet setup.
-
-A cable is always recommended - it comes up automatically, no action needed.
-
-For wireless: this fork no longer assumes ConnMan is present (recent Artix live
-media often doesn't reliably ship it, which is what the old network check used to
-depend on). Check what's actually on your ISO first:
-
-```
-command -v iwctl wpa_supplicant dhcpcd
+```sh
+iwctl device list
+iwctl station YOUR_DEVICE connect "YOUR_WIFI_NAME"
 ```
 
-Then, depending on what's there:
+Replace `YOUR_DEVICE` with the name shown by the first command. The live ISO must have internet access to download packages.
 
-```
-# iwd
-iwctl station wlan0 connect "SSID"
+## After reboot
 
-# wpa_supplicant
-wpa_supplicant -B -i wlan0 -c <(wpa_passphrase SSID PASSWORD) && dhcpcd wlan0
-```
+ALBI only installs the base system. Configure your desktop and dotfiles separately.
 
-# Changes in this fork.
+If chezmoi wasn't available during installation, install it using a repository that provides it or follow the [official chezmoi instructions](https://www.chezmoi.io/install/). You can then initialize your own dotfiles repository as your regular user.
 
-- Network check no longer depends on `connmanctl` — recent Artix live ISOs don't
-  reliably ship it. The pre-flight check now does a plain `ping` to verify actual
-  reachability instead of checking one specific tool's state.
-- Refuses to install if the encryption, root, or user password is still the
-  default `changeme`.
-- The `parted` install step now fails with a clear message instead of continuing
-  silently if pacman can't install it.
-- Hardened the pre-install reset block: it now fully tears down a leftover
-  `cryptlvm`/LVM mapping from a previous attempt (unscoped `swapoff`/`vgchange`,
-  plus a `dmsetup remove --force` fallback), instead of silently swallowing a
-  failed teardown and running into it later.
-- Added `udevadm settle` calls after teardown and after partitioning, to close a
-  suspected race between udev processing block-device events and the script
-  repartitioning/reformatting in quick succession.
+## Defaults
 
-# Summary.
+The script currently uses **`en_US.UTF-8`**, **`America/Los_Angeles`**, an LVM group named **`VGArtix`**, and a LUKS mapping named **`cryptlvm`**. Change these values in the script before running it if needed.
 
-You should read the script, it is well documented and should be easy to understand.
-Anything unclear can be found in the listed articles above.
+**Testing:** This revised installer has passed Bash syntax and partition-name checks, but it has **not yet been tested on a physical Artix installation**. Review it carefully and test on a spare drive or virtual machine first.
 
-If you have suggestions on improving the script, or need help with the
-installation. Feel free to contribute/open issues.
+## References
+
+- [Artix installation guide](https://wiki.artixlinux.org/Main/Installation)
+- [Artix full-disk encryption](https://wiki.artixlinux.org/Main/InstallationWithFullDiskEncryption)
+- [Arch installation guide](https://wiki.archlinux.org/title/Installation_guide)
+- [LVM on LUKS](https://wiki.archlinux.org/title/Dm-crypt/Encrypting_an_entire_system#LVM_on_LUKS)
+
+Questions, issues, and pull requests are welcome.

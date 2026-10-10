@@ -1,0 +1,250 @@
+#!/bin/sh
+
+################################################
+# Artix Linux Minimal Encrypted Install Script #
+################################################
+
+# VARS #
+ENCRYPTION_PASSWORD="changeme"
+ROOT_PASSWORD="changeme"
+USER_PASSWORD="changeme"
+USER_NAME="artix"
+DISK_NAME="/dev/nvme0n1"
+HOST_NAME="artix"
+VG_NAME="VGArtix"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+NORMAL='\e[0m'
+VERIFY_CHANGE_0="${RED}< CHANGE THIS ${NORMAL}"
+VERIFY_CHANGE_1="${RED}< CHANGE THIS ${NORMAL}"
+VERIFY_CHANGE_2="${RED}< CHANGE THIS ${NORMAL}"
+
+################################################
+# PRE-CHECK #
+
+# IF EFI
+[ -z "$(ls /sys/firmware/efi/efivars)" ] \
+&& echo "EFI only installation; Please boot with EFI." \
+&& exit
+
+# IF ROOT
+[ $(id -u) != 0 ] \
+&& echo "Root privileges required." \
+&& exit
+
+# IF WAN
+ping -c 1 -W 5 artixlinux.org >/dev/null 2>&1 \
+|| { echo "No network connection. Get online first, then re-run this script."; exit 1; }
+
+################################################
+# MENU FUNCTIONS #
+
+change_encryption_password () {
+echo "Enter the new encryption password:"
+read -p "" ENCRYPTION_PASSWORD
+VERIFY_CHANGE_0="${GREEN}< CHANGED ${NORMAL}"
+menu
+}
+
+change_root_password () {
+echo "Enter the new root password:"
+read -p "" ROOT_PASSWORD
+VERIFY_CHANGE_1="${GREEN}< CHANGED ${NORMAL}"
+menu
+}
+
+change_user_password () {
+echo "Enter the user password:"
+read -p "" USER_PASSWORD
+VERIFY_CHANGE_2="${GREEN}< CHANGED ${NORMAL}"
+menu
+}
+
+change_user_name () {
+echo "Enter the user name:"
+read -p "" USER_NAME
+menu
+}
+
+change_disk_name () {
+echo "Enter the disk name:"
+read -p "" DISK_NAME
+menu
+}
+
+change_host_name () {
+echo "Enter the host name:"
+read -p "" HOST_NAME
+menu
+}
+
+change_volume_group_name () {
+echo "Enter the volume group name:"
+read -p "" VG_NAME
+menu
+}
+
+################################################
+# MENU #
+
+menu () {
+clear -x
+echo "################################################"
+echo "# Welcome to this Artix Installation Script. #"
+echo "# Select the values you want to modify: #"
+printf "0) Change the encryption password: '$ENCRYPTION_PASSWORD' $VERIFY_CHANGE_0 \n"
+printf "1) Change the root password: '$ROOT_PASSWORD' $VERIFY_CHANGE_1 \n"
+printf "2) Change the user password: '$USER_PASSWORD' $VERIFY_CHANGE_2 \n"
+printf "3) Change the user name: '$USER_NAME' \n"
+printf "4) Change the disk name(NVME ONLY): '$DISK_NAME' \n"
+printf "5) Change the host name: '$HOST_NAME' \n"
+printf "6) Change the volume group name: '$VG_NAME' \n"
+printf "GO) Execute script using above listed variables \n"
+printf "q) EXIT installation \n"
+read n
+case $n in
+0) change_encryption_password;;
+1) change_root_password;;
+2) change_user_password;;
+3) change_user_name;;
+4) change_disk_name;;
+5) change_host_name;;
+6) change_volume_group_name;;
+GO) install_artix;;
+q) exit 0;;
+*) menu;;
+esac
+}
+
+################################################
+# INSTALL #
+
+install_artix () {
+[ "$ENCRYPTION_PASSWORD" = "changeme" ] || [ "$ROOT_PASSWORD" = "changeme" ] || [ "$USER_PASSWORD" = "changeme" ] \
+&& { echo "Refusing to install: a password is still the default 'changeme'."; exit 1; }
+
+read -p "Are you sure?, no going back after this (y/n): " verify; [[ $verify == [Yy]* ]] || exit 0
+echo "Starting Artix Linux installation..."
+sleep 3
+
+# SYNC CLOCK/DATE
+ntpd -qg
+hwclock -w
+
+# RESET/INIT
+pacman -Sy --noconfirm parted || { echo "pacman failed to install parted - see error above."; exit 1; }
+
+{
+swapoff -a
+umount -R /mnt
+vgchange -an
+cryptsetup close cryptlvm
+sleep 1
+dmsetup remove --force cryptlvm
+killall -s 9 cryptsetup
+} 2>/dev/null
+udevadm settle 2>/dev/null
+
+# ENABLE DEBUG OUTPUT, EXIT ON ERROR
+set -xe
+
+# PARTITION DISKS
+parted -s -a optimal $DISK_NAME mklabel gpt
+parted -s -a optimal $DISK_NAME mkpart "BOOT" fat32 0% 512MiB
+parted -s -a optimal $DISK_NAME set 1 esp on
+parted -s -a optimal $DISK_NAME mkpart "CRYPT" ext4 512MiB 100%
+udevadm settle
+
+# SETUP LUKS
+echo -ne "$ENCRYPTION_PASSWORD" | cryptsetup luksFormat ${DISK_NAME}p2 -d -
+echo -ne "$ENCRYPTION_PASSWORD" | cryptsetup open ${DISK_NAME}p2 cryptlvm -d -
+
+# CREATE VOLUMES
+pvcreate /dev/mapper/cryptlvm
+vgcreate $VG_NAME /dev/mapper/cryptlvm
+lvcreate -L 8G $VG_NAME -n swap
+lvcreate -l 100%FREE $VG_NAME -n root
+
+# CREATE FILESYSTEMS
+mkfs.fat -F32 ${DISK_NAME}p1
+mkswap -f /dev/$VG_NAME/swap
+mkfs.ext4 -qF /dev/$VG_NAME/root
+
+# MOUNT FILESYSTEMS
+mount /dev/$VG_NAME/root /mnt
+mkdir /mnt/boot
+mount ${DISK_NAME}p1 /mnt/boot
+swapon /dev/$VG_NAME/swap
+
+# BASESTRAP
+basestrap /mnt runit elogind-runit base base-devel networkmanager networkmanager-runit vi
+basestrap /mnt linux linux-firmware
+fstabgen -U /mnt > /mnt/etc/fstab
+
+# MORE BASESTRAP & LVM HOOKS
+sed -s 's/^HOOKS=.*/HOOKS=(base udev autodetect modconf block \
+encrypt keyboard keymap lvm2 resume filesystems fsck)/g' -i /mnt/etc/mkinitcpio.conf
+basestrap /mnt cryptsetup lvm2 mkinitcpio grub efibootmgr
+
+# CONFIGURE BOOTLOADER
+cryptuuid=$(blkid -s UUID -o value ${DISK_NAME}p2)
+swapuuid=$(blkid -s UUID -o value /dev/$VG_NAME/swap)
+sed -s "s/^GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT=\"\
+cryptdevice=UUID=$cryptuuid:lvm-system loglevel=3 quiet resume=UUID=$swapuuid net.ifnames=0\"/g" \
+-i /mnt/etc/default/grub
+sed -s 's/^#GRUB_ENABLE_CRYPTODISK=y/GRUB_ENABLE_CRYPTODISK=y/g' -i /mnt/etc/default/grub
+
+# INSTALL BOOTLOADER
+artix-chroot /mnt sh -c 'grub-install --target=x86_64-efi --efi-directory=/boot \
+--bootloader-id=grub && grub-mkconfig -o /boot/grub/grub.cfg'
+
+# CREATE USER
+artix-chroot /mnt sh -c "useradd -m $USER_NAME"
+
+# SET PASSWORDS
+artix-chroot /mnt sh -c "echo root:${ROOT_PASSWORD} | chpasswd"
+sed -s 's/# %wheel ALL=(ALL) ALL/%wheel ALL=(ALL) ALL \
+Defaults rootpw,pwfeedback/g' -i /mnt/etc/sudoers
+artix-chroot /mnt sh -c "echo ${USER_NAME}:${USER_PASSWORD} | chpasswd"
+
+# CONFIGURE HOSTNAME
+echo "$HOST_NAME" > /mnt/etc/hostname
+{
+echo "127.0.0.1 localhost"
+echo "::1 localhost"
+echo "127.0.0.1 ${HOST_NAME}.localdomain $HOST_NAME"
+} >> /mnt/etc/hosts
+
+# ENABLE NetworkManager
+artix-chroot /mnt sh -c 'ln -s /etc/runit/sv/NetworkManager /etc/runit/runsvdir/default'
+
+# CONFIGURE LOCALE & TIMEZONES
+{
+echo 'LANG="en_US.UTF-8"'
+echo 'LC_COLLATE="C"'
+} >> /mnt/etc/locale.conf
+sed -s 's/#en_US/en_US/g' -i /mnt/etc/locale.gen
+artix-chroot /mnt sh -c 'locale-gen'
+artix-chroot /mnt sh -c 'ln -sf /usr/share/zoneinfo/America/Los_Angeles /etc/localtime && hwclock -w'
+
+# CLEANUP
+swapoff /dev/$VG_NAME/swap
+umount -R /mnt
+vgchange -a n
+cryptsetup close cryptlvm
+
+# DISABLE DEBUG & WRAP-UP
+set +x
+echo
+echo "################################################"
+echo "# Installation completed, you can login using: #"
+echo "# User: $USER_NAME"
+echo "# Pass: $USER_PASSWORD"
+echo "################################################"
+}
+
+################################################
+# CORE #
+
+menu
